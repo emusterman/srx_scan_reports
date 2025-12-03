@@ -398,7 +398,8 @@ def generate_scan_report(start_id=None,
                 scan_report.exp_md = exp_md
             
             print(f'Adding scan {current_id}...')
-            scan_report._appended_pages = current_pdf.numPages - 1
+            num_pages = len(current_pdf.pages)
+            scan_report._appended_pages = num_pages - 1
 
             # Add blank page for overlay
             scan_report.add_page(disable_header=True)
@@ -425,7 +426,8 @@ def generate_scan_report(start_id=None,
             writer = PdfWriter()
             writer.append_pages_from_reader(current_pdf)
             # Add any newly generated pages
-            for i in range(1, new_pdf.numPages):
+            num_pages = len(new_pdf.pages)
+            for i in range(1, num_pages):
                 writer.add_page(new_pdf.pages[i])
             # Overwrite pervious file with updated pdf
             writer.write(pdf_path)
