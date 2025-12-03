@@ -33,10 +33,16 @@ def __dir__():
 
 
 # Universal only load once
-from tiled.client import from_profile
+# from tiled.client import from_profile
+from tiled.client import from_uri
 
 # Access data
-c = from_profile('srx')
+# c = from_profile('srx')
+# c = from_profile('srx')["raw"]
+c = from_uri(
+    "https://tiled.nsls2.bnl.gov/api/v1/metadata/srx/raw",
+    include_data_sources=True,
+)
 
 
 # Bring class objects one level up for convenience
