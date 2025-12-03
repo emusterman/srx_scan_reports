@@ -14,13 +14,18 @@ import matplotlib.ticker as ticker
 from matplotlib_scalebar.scalebar import ScaleBar
 from PIL import Image
 from scipy.ndimage import median_filter
+import skbeam.core.constants.xrf as xrfC
 
 from xrdmaptools.io.db_io import (
     manual_load_data,
     load_step_rc_data
 )
 
-from .find_xrf_rois import find_xrf_rois
+from .find_xrf_rois import (
+    find_xrf_rois,
+    all_edges,
+    all_edges_names
+)
 from . import c
 
 
@@ -99,7 +104,7 @@ class SRXScanPDF(FPDF):
             title_words = self.exp_md['title'].split(' ')
             title_text = title_words[0]
             for word in title_words[1:]:
-                if len(title_text) + len(word) + 4 < 80:
+                if len(title_text) + len(word) + 4 < 75:
                     title_text += f' {word}'
                 else:
                     title_text += '...'
@@ -839,13 +844,13 @@ class SRXScanPDF(FPDF):
             en_inputs = [float(en) for en in scan_inputs[0][1:-1].split(' ')]
             if en_inputs[0] < 1e3:
                 en_inputs = [en * 1e3 for en in en_inputs]
-            en_steps = scan_inputs[1][1:-1].split(' ') # should already be in eV
+            en_steps = [float(step) for step in scan_inputs[1][1:-1].split(' ') if step != ''] # should already be in eV
             en_range = np.max(en_inputs) - np.min(en_inputs)
 
             # Get energy points. Taken for xanes_plan directly
             ept = np.array([])
             erange = np.array(en_inputs)
-            estep = np.array([float(step) for step in en_steps])
+            estep = np.array(en_steps)
             # Calculation for the energy points
             for i in range(len(estep)):
                 ept = np.append(ept, np.arange(erange[i], erange[i+1], estep[i]))
@@ -938,7 +943,7 @@ class SRXScanPDF(FPDF):
                         stream_names = [key for key in bs_run.keys() if 'scan' in key]
                         xrf_sum = np.sum([bs_run[stream_names[0]]['data'][f'xs_id_mono_fly_channel0{ind + 1}'][..., :2500] for ind in range(7)], axis=(0, 1, 2))
                     else:
-                        xrf_sum = np.sum([bs_run['primary']['data'][f'xs_channel0{i + 1}_fluor'][..., :2500] for i in range(7)], axis=(0, 1, 2))
+                        xrf_sum = np.sum([bs_run['primary']['data'][f'xs_channel0{i + 1}_fluor'][..., :2500] for i in range(7)], axis=(0, 1))
                     
                     xs_roi = find_xrf_rois(xrf_sum,
                                            np.arange(0, len(xrf_sum)) * en_step,
