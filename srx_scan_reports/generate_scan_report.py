@@ -221,7 +221,7 @@ def generate_scan_report(start_id=None,
                             + f'has proposal ID ({start_proposal_id}) '
                             + f'and cycle ({start_cycle}) which does '
                             + f'not match the provided proposal ID '
-                            + f'({proposal_ID}) and cycle ({cycle})!'
+                            + f'({proposal_id}) and cycle ({cycle})!'
                             + f'\nUsing the start ID {start_id} '
                             + 'information.')
                 print(warn_str)

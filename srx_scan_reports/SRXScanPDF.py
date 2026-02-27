@@ -2,15 +2,13 @@ import numpy as np
 import time as ttime
 import dask.array as da
 import os
+import functools
 
 from fpdf import FPDF
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-from matplotlib.figure import Figure
-from matplotlib.colors import LogNorm
-import matplotlib.ticker as ticker
 from matplotlib_scalebar.scalebar import ScaleBar
 from PIL import Image
 from scipy.ndimage import median_filter
@@ -102,14 +100,16 @@ class SRXScanPDF(FPDF):
 
             # Shrink title as necessary
             title_words = self.exp_md['title'].split(' ')
-            title_text = title_words[0]
+            title_text = 'Proposal Title : ' + title_words[0]
             for word in title_words[1:]:
-                if len(title_text) + len(word) + 4 < 75:
+                # Add words to title until the text length is within 5 mm of the table width
+                # to avoid generating a new row. This number is empirical
+                if self.get_string_width(title_text + f' {word}...') < table._width - 5:
                     title_text += f' {word}'
                 else:
                     title_text += '...'
                     break
-            table.row().cell(f"Proposal Title : {title_text}")
+            table.row().cell(title_text)
 
         self.set_line_width(0.5)
         self.set_draw_color(0, 0, 0)
@@ -197,6 +197,18 @@ class SRXScanPDF(FPDF):
 
         if space_available < space_needed:
             self.add_page()
+
+
+    # Measure scan entry length. Useful for debugging
+    def _verbose_scan_entry_length(func):
+        @functools.wraps(func)
+        def wrapped(self, *args, **kwargs):
+            start_y = self.y
+            func(self, *args, **kwargs)
+            end_y = self.y
+            if self._verbose:
+                print(f'Cell took {end_y - start_y} mm.')
+        return wrapped
         
 
     def add_scan(self,
@@ -227,54 +239,29 @@ class SRXScanPDF(FPDF):
         scan_data.update(self.get_baseline_scan_data(bs_run))        
 
         # Build report entry
-        if scan_data['scan_type'] == 'XRF_FLY':
-            start_y = self.y
+        if scan_data['scan_type'] in ['XRF_FLY', 'XAS_SLICE', 'FLY_ANGLE_RC']:
             self.add_XRF_FLY(bs_run, scan_data, scan_kwargs)
-            end_y = self.y
-            if self._verbose:
-                print(f'Cell took {end_y - start_y} mm.')
+    
+        elif scan_data['scan_type'] == 'XRF_STEP':
+            self.add_XRF_STEP(bs_run, scan_data, scan_kwargs)  
 
         elif scan_data['scan_type'] == 'XAS_STEP':
-            start_y = self.y
             self.add_XAS_STEP(bs_run, scan_data, scan_kwargs)
-            end_y = self.y
-            if self._verbose:
-                print(f'Cell took {end_y - start_y} mm.')
 
         elif scan_data['scan_type'] == 'XAS_FLY':
-            start_y = self.y
             self.add_XAS_FLY(bs_run, scan_data, scan_kwargs)
-            end_y = self.y
-            if self._verbose:
-                print(f'Cell took {end_y - start_y} mm.')
-
-        elif scan_data['scan_type'] == 'XRF_STEP':
-            start_y = self.y
-            self.add_XRF_STEP(bs_run, scan_data, scan_kwargs)
-            end_y = self.y
-            if self._verbose:
-                print(f'Cell took {end_y - start_y} mm.')
 
         elif scan_data['scan_type'] == 'ANGLE_RC':
-            start_y = self.y
             self.add_ANGLE_RC(bs_run, scan_data, scan_kwargs)
-            end_y = self.y
-            if self._verbose:
-                print(f'Cell took {end_y - start_y} mm.')
 
         elif scan_data['scan_type'] == 'ENERGY_RC':
-            start_y = self.y
             self.add_ENERGY_RC(bs_run, scan_data, scan_kwargs)
-            end_y = self.y
-            if self._verbose:
-                print(f'Cell took {end_y - start_y} mm.')
         
         elif scan_data['scan_type'] == 'STATIC_XRD':
-            start_y = self.y
             self.add_STATIC_XRD(bs_run, scan_data, scan_kwargs)
-            end_y = self.y
-            if self._verbose:
-                print(f'Cell took {end_y - start_y} mm.')
+        
+        elif scan_data['scan_type'] == 'VLM_SNAPSHOT':
+            self.add_VLM_SNAPSHOT(bs_run, scan_data, scan_kwargs)
 
         elif scan_data['scan_type'] in ['PEAKUP', 'OPTIMIZE_SCALERS']:
             if include_optimizers:
@@ -285,8 +272,6 @@ class SRXScanPDF(FPDF):
                 end_y = self.y
                 if self._verbose:
                     print(f'Cell took {end_y - start_y} mm.')
-            else:
-                return
 
         elif include_unknowns:
             warn_str = (f"WARNING: Scan {scan_id} of type {scan_data['scan_type']} "
@@ -301,9 +286,6 @@ class SRXScanPDF(FPDF):
             end_y = self.y
             if self._verbose:
                 print(f'Unknown took {end_y - start_y} mm.')
-
-        else:
-            return
 
     
     def add_BASE_SCAN(self,
@@ -441,8 +423,76 @@ class SRXScanPDF(FPDF):
         
         if self._verbose:
             print('BASE_SCAN added!')
+    
+
+    def add_scan_table(self,
+                       scan_data,
+                       table_labels,
+                       table_values,
+                       col_width):
+
+        """Draw table of scan data"""
+
+        if scan_data['sample_name'] is not None:
+            table_labels.insert(0, 'Sample')
+            sample_name = scan_data['sample_name']
+            print_name = ''
+            for letter in sample_name:
+                # Sample name should be less than 2 mm of column width to avoid generating new row
+                if self.get_string_width(print_name + f'{letter}...') < col_width[-1] - 2: # 2 is empirical
+                    print_name += letter
+                else:
+                    print_name += '...'
+                    break
+            table_values.insert(0, print_name)
+
+        # Draw table
+        reset_y = self.y
+        self.set_xy(self.x + self._gap_width, self.y)
+        self.set_font(style='B', size=self._table_header_font_size)
+        self.cell(h=self._table_header_height, new_x='LEFT', new_y='NEXT', text=f"Scan Data")
+        self.set_font(size=self._table_font_size)
+        l_margin = self.l_margin 
+        self.l_margin = self.x # Temp move to set table location. Probably bad
+        with self.table(
+                # borders_layout="NONE",
+                first_row_as_headings=False,
+                line_height=self._table_cell_height,
+                col_widths=col_width,
+                width=self._scan_table_width,
+                align='L',
+                text_align='LEFT'
+                ) as table:
+            for i in range(len(table_labels)):
+                row = table.row()
+                row.cell(table_labels[i])
+                row.cell(table_values[i])
+            table_width = table._width
+        self.set_xy(self.x + table_width, reset_y)
+        self.l_margin = l_margin # Reset left margin
 
 
+    # Convenience function to wrap up scan entry
+    def finish_entry(self,
+                     scan_data,
+                     scan_kwargs,
+                     table_labels, table_values, table_width,
+                     images, max_widths):
+        
+        # Determine if a new page needs to be added
+        self.request_cell_space(num_images=len(images))
+        
+        # Add base scan information
+        self.add_BASE_SCAN(scan_data, scan_kwargs)
+
+        # Draw table
+        self.add_scan_table(scan_data, table_labels, table_values, table_width)
+        
+        # Draw images
+        self.draw_images(images, max_widths, self._max_height)
+
+
+    @_verbose_scan_entry_length
     def add_XRF_FLY(self,
                     bs_run,
                     scan_data,
@@ -458,6 +508,7 @@ class SRXScanPDF(FPDF):
                               scan_type='fly')
 
 
+    @_verbose_scan_entry_length
     def add_XRF_STEP(self,
                      bs_run,
                      scan_data,
@@ -533,7 +584,7 @@ class SRXScanPDF(FPDF):
             motor_units[1] = 'deg'
 
         exts = [args[1] - args[0], args[4] - args[3]]
-        if scan_type == 'fly':
+        if float(bs_run.start['md_version']) >= 1.3 or scan_type == 'fly':
             nums = [args[2], args[5]]
             steps = [ext / (num - 1) if num != 1 else 0 for ext, num in zip(exts, nums)]
         else:
@@ -733,6 +784,7 @@ class SRXScanPDF(FPDF):
                 if plot_func is not None:
                     fig = plot_func(bs_run,
                                     args,
+                                    scan_type,
                                     roi,
                                     roi_label,
                                     TRANSPOSED,
@@ -747,42 +799,13 @@ class SRXScanPDF(FPDF):
                 if fig is not None:
                     images.append(self._figure_to_image(fig))
                     max_widths.append(roi_max_width)
-            
-        # Determine if a new page needs to be added
-        self.request_cell_space(num_images=len(images))
         
-        # Add base scan information
-        self.add_BASE_SCAN(scan_data, scan_kwargs)
-
-        # Draw table
-        reset_y = self.y
-        self.set_xy(self.x + self._gap_width, self.y)
-        self.set_font(style='B', size=self._table_header_font_size)
-        self.cell(h=self._table_header_height, new_x='LEFT', new_y='NEXT', text=f"Scan Data")
-        self.set_font(size=self._table_font_size)
-        l_margin = self.l_margin 
-        self.l_margin = self.x # Temp move to set table location. Probably bad
-        with self.table(
-                # borders_layout="NONE",
-                first_row_as_headings=False,
-                line_height=self._table_cell_height,
-                col_widths=self._scan_table_cols_xrf,
-                width=self._scan_table_width,
-                align='L',
-                text_align='LEFT'
-                ) as table:
-            for i in range(len(table_labels)):
-                row = table.row()
-                row.cell(table_labels[i])
-                row.cell(table_values[i])
-            table_width = table._width
-        self.set_xy(self.x + table_width, reset_y)
-        self.l_margin = l_margin # Reset left margin
-        
-        # Draw images
-        self.draw_images(images, max_widths, self._max_height)
+        self.finish_entry(scan_data, scan_kwargs,
+                          table_labels, table_values, self._scan_table_cols_xrf,
+                          images, max_widths)
 
 
+    @_verbose_scan_entry_length
     def add_XAS_STEP(self,
                      bs_run,
                      scan_data,
@@ -798,6 +821,7 @@ class SRXScanPDF(FPDF):
                               scan_type='step')
 
 
+    @_verbose_scan_entry_length
     def add_XAS_FLY(self,
                     bs_run,
                     scan_data,
@@ -1038,40 +1062,12 @@ class SRXScanPDF(FPDF):
                 images.append(self._figure_to_image(fig))
                 max_widths.append(self._max_plot_width)
 
-        # Determine if a new page needs to be added
-        self.request_cell_space(num_images=len(images))
-        
-        # Add base scan information
-        self.add_BASE_SCAN(scan_data, scan_kwargs)
-
-        # Draw table
-        reset_y = self.y
-        self.set_xy(self.x + self._gap_width, self.y)
-        self.set_font(style='B', size=self._table_header_font_size)
-        self.cell(h=self._table_header_height, new_x='LEFT', new_y='NEXT', text=f"Scan Data")
-        self.set_font(size=self._table_font_size)
-        l_margin = self.l_margin 
-        self.l_margin = self.x # Temp move to set table location. Probably bad
-        with self.table(
-                first_row_as_headings=False,
-                line_height=self._table_cell_height,
-                col_widths=self._scan_table_cols_xas,
-                width=self._scan_table_width,
-                align='L',
-                text_align='LEFT'
-                ) as table:
-            for i in range(len(table_labels)):
-                row = table.row()
-                row.cell(table_labels[i])
-                row.cell(table_values[i])
-            table_width = table._width
-        self.set_xy(self.x + table_width, reset_y)
-        self.l_margin = l_margin # Reset left margin
-
-        # Draw images
-        self.draw_images(images, max_widths, self._max_height)
+        self.finish_entry(scan_data, scan_kwargs,
+                          table_labels, table_values, self._scan_table_cols_xas,
+                          images, max_widths)
 
 
+    @_verbose_scan_entry_length
     def add_ENERGY_RC(self,
                       bs_run,
                       scan_data,
@@ -1087,6 +1083,7 @@ class SRXScanPDF(FPDF):
                           scan_type='energy')
     
 
+    @_verbose_scan_entry_length
     def add_ANGLE_RC(self,
                      bs_run,
                      scan_data,
@@ -1181,8 +1178,8 @@ class SRXScanPDF(FPDF):
                     sclr = np.ones(len(rocking), dtype=float)
 
                 data, roi_str = self._load_and_process_ad_data(bs_run,
-                                                            det,
-                                                            sclr)
+                                                               det,
+                                                               sclr)
 
                 # Plot_data
                 if data is not None:
@@ -1195,47 +1192,19 @@ class SRXScanPDF(FPDF):
                             max_height=self._max_height,
                             max_width=self._max_plot_width)
                     images.append(self._figure_to_image(fig))
-                    max_widths.append(self._max_plot_width)   
+                    max_widths.append(self._max_plot_width)
 
-        # Determine if a new page needs to be added
-        self.request_cell_space(num_images=len(images))
-        
-        # Add base scan information
-        self.add_BASE_SCAN(scan_data, scan_kwargs)
-
-        # Draw table
-        reset_y = self.y
-        self.set_xy(self.x + self._gap_width, self.y)
-        self.set_font(style='B', size=self._table_header_font_size)
-        self.cell(h=self._table_header_height, new_x='LEFT', new_y='NEXT', text=f"Scan Data")
-        self.set_font(size=self._table_font_size)
-        l_margin = self.l_margin 
-        self.l_margin = self.x # Temp move to set table location. Probably bad
-        with self.table(
-                first_row_as_headings=False,
-                line_height=self._table_cell_height,
-                col_widths=self._scan_table_cols_rc,
-                width=self._scan_table_width,
-                align='L',
-                text_align='LEFT'
-                ) as table:
-            for i in range(len(table_labels)):
-                row = table.row()
-                row.cell(table_labels[i])
-                row.cell(table_values[i])
-            table_width = table._width
-        self.set_xy(self.x + table_width, reset_y)
-        self.l_margin = l_margin # Reset left margin
-
-        # Draw images
-        self.draw_images(images, max_widths, self._max_height)
+        self.finish_entry(scan_data, scan_kwargs,
+                          table_labels, table_values, self._scan_table_cols_rc,
+                          images, max_widths) 
     
 
+    @_verbose_scan_entry_length
     def add_STATIC_XRD(self,
                        bs_run,
                        scan_data,
                        scan_kwargs):
-        """Add data specific to STATIC_XRF scans"""
+        """Add data specific to STATIC_XRD scans"""
 
         if self._verbose:
             print('Adding STATIC_XRD...')
@@ -1302,38 +1271,42 @@ class SRXScanPDF(FPDF):
                 images.append(self._figure_to_image(fig))
                 max_widths.append(self._max_plot_width)
 
-        # Determine if a new page needs to be added
-        self.request_cell_space(num_images=len(images))
+        self.finish_entry(scan_data, scan_kwargs,
+                          table_labels, table_values, self._scan_table_cols_rc,
+                          images, max_widths)
+
+
+    @_verbose_scan_entry_length
+    def add_VLM_SNAPSHOT(self,
+                         bs_run,
+                         scan_data,
+                         scan_kwargs):
+        """Add data specific to VLM_SNAPSHOT scans"""
+
+        if self._verbose:
+            print('Adding VLM_SNAPSHOT...')
+
+        # Load more useful metadata specific to XRF_FLY
+        scan = bs_run.start['scan']
+
+        # Generate scan table information
+        table_labels = []
+        all_dets = [det for det in scan['detectors']]
+        table_values = []
         
-        # Add base scan information
-        self.add_BASE_SCAN(scan_data, scan_kwargs)
+        # Generate images
+        images, max_widths = [], []
+        if scan_data['exit_status'] == 'success':
+            if 'nano_vlm' in all_dets:
+                fig = self._get_vlm_plot(bs_run,
+                                         max_width=self._max_plot_width)
+                if fig is not None:
+                    images.append(self._figure_to_image(fig))
+                    max_widths.append(self._max_plot_width)
 
-        # Draw table
-        reset_y = self.y
-        self.set_xy(self.x + self._gap_width, self.y)
-        self.set_font(style='B', size=self._table_header_font_size)
-        self.cell(h=self._table_header_height, new_x='LEFT', new_y='NEXT', text=f"Scan Data")
-        self.set_font(size=self._table_font_size)
-        l_margin = self.l_margin 
-        self.l_margin = self.x # Temp move to set table location. Probably bad
-        with self.table(
-                first_row_as_headings=False,
-                line_height=self._table_cell_height,
-                col_widths=self._scan_table_cols_rc,
-                width=self._scan_table_width,
-                align='L',
-                text_align='LEFT'
-                ) as table:
-            for i in range(len(table_labels)):
-                row = table.row()
-                row.cell(table_labels[i])
-                row.cell(table_values[i])
-            table_width = table._width
-        self.set_xy(self.x + table_width, reset_y)
-        self.l_margin = l_margin # Reset left margin
-
-        # Draw images
-        self.draw_images(images, max_widths, self._max_height)
+        self.finish_entry(scan_data, scan_kwargs,
+                          table_labels, table_values, self._scan_table_cols_rc,
+                          images, max_widths)
     
 
     ### Standardized Plotting ###
@@ -1342,13 +1315,13 @@ class SRXScanPDF(FPDF):
                       bs_run,
                       max_height=None,
                       max_width=None,
-                      scale=0.345 # um / px
+                      scale=0.5 # um / px
                       ):
         
         if max_height is None:
             max_height = self._max_height
         if max_width is None:
-            max_width = self._max_width
+            max_width = self._max_plot_width
         
         # Check for data
         if ('camera_snapshot' not in bs_run
@@ -1383,9 +1356,9 @@ class SRXScanPDF(FPDF):
             ax.scatter(*marker, marker='+', lw=2, s=100, c='r')
 
         # Format scalbar
-        scalebar = ScaleBar(0.345, # Example: 1 pixel = 0.2 microns
+        scalebar = ScaleBar(scale, # Example: 1 pixel = 0.2 microns
                             'um',
-                            fixed_value=100,
+                            fixed_value=200,
                             color='r',
                             box_alpha=0,
                             width_fraction=0.02,
@@ -1407,6 +1380,7 @@ class SRXScanPDF(FPDF):
     def _get_xrf_map_plot(self,
                           bs_run,
                           scan_args,
+                          scan_type,
                           roi,
                           roi_label,
                           transposed,
@@ -1418,7 +1392,7 @@ class SRXScanPDF(FPDF):
                           **kwargs):
 
         # Load data around ROI
-        if bs_run.start['scan']['type'].split('_')[-1].lower() == 'fly':
+        if scan_type == 'fly':
             data = np.sum(bs_run['stream0']['data']['xs_fluor'][..., :7, roi], axis=(-2, -1,), dtype=np.float32)
         else:
             data = self._load_and_reshape_step_data(bs_run, roi)
@@ -1433,6 +1407,7 @@ class SRXScanPDF(FPDF):
 
         fig = self._get_mapped_plot(bs_run,
                                     scan_args,
+                                    scan_type,
                                     data,
                                     transposed,
                                     title=f"Scan {bs_run.start['scan_id']}\n{roi_str}",
@@ -1447,6 +1422,7 @@ class SRXScanPDF(FPDF):
     def _get_sclr_map_plot(self,
                            bs_run,
                            scan_args,
+                           scan_type,
                            roi,
                            roi_label,
                            transposed,
@@ -1456,7 +1432,7 @@ class SRXScanPDF(FPDF):
                            motor_units,
                            **kwargs):
 
-        if bs_run.start['scan']['type'].split('_')[-1].lower() == 'fly':
+        if scan_type == 'fly':
             data = bs_run['stream0']['data'][roi][:].astype(np.float32)
         else:
             data = self._load_and_reshape_step_data(bs_run, roi)
@@ -1469,6 +1445,7 @@ class SRXScanPDF(FPDF):
 
         fig = self._get_mapped_plot(bs_run,
                                     scan_args,
+                                    scan_type,
                                     data,
                                     transposed,
                                     title=f"Scan {bs_run.start['scan_id']}\n{roi_str}",
@@ -1483,6 +1460,7 @@ class SRXScanPDF(FPDF):
     def _get_ad_map_plot(self,
                          bs_run,
                          scan_args,
+                         scan_type,
                          roi,
                          roi_label,
                          transposed,
@@ -1493,7 +1471,7 @@ class SRXScanPDF(FPDF):
                          **kwargs):
         
         # Load Data
-        if bs_run.start['scan']['type'].split('_')[-1].lower() == 'fly':
+        if scan_type == 'fly':
             data, roi_str = self._load_and_process_ad_data(bs_run,
                                                             roi,
                                                             sclr)
@@ -1507,6 +1485,7 @@ class SRXScanPDF(FPDF):
         # Get mapped plot
         fig = self._get_mapped_plot(bs_run,
                                     scan_args,
+                                    scan_type,
                                     data,
                                     transposed,
                                     title=f"Scan {bs_run.start['scan_id']}\n{roi_str}",
@@ -1521,6 +1500,7 @@ class SRXScanPDF(FPDF):
     def _get_mapped_plot(self,
                          bs_run,
                          scan_args,
+                         scan_type,
                          data,
                          transposed,
                          colornorm='linear',
@@ -1564,14 +1544,16 @@ class SRXScanPDF(FPDF):
                     for i in range(data.shape[0]):
                         full_data[i] = data[i]
                     data = full_data
+            
+            # Check for snake
+            if (scan_type == 'fly'
+                and 'snake' in bs_run.start['scan']
+                and bs_run.start['scan']):
+                # Flip snaked rows
+                for row_ind in range(1, data.shape[0], 2):
+                    data[row_ind] = data[row_ind][::-1]
         
         # Generate plot
-        # figscale = 0.25
-        # pad = 5 # in mm
-        # figsize = np.array([(max_width + pad) / 25.4,
-        #                     (max_height + pad) / 25.4]) / figscale
-        # fig, ax = plt.subplots(figsize=figsize, layout=None, dpi=200)
-        # fontsize = 36
         figsize = [max_width / 15, max_height / 15]
         fig, ax = plt.subplots(figsize=figsize, layout='tight', dpi=200)
         fontsize = 12
@@ -1580,7 +1562,7 @@ class SRXScanPDF(FPDF):
         # fig.patch.set_edgecolor('cornflowerblue')
 
         exts = [scan_args[1] - scan_args[0], scan_args[4] - scan_args[3]]
-        if bs_run.start['scan']['type'].split('_')[-1].lower() == 'fly':
+        if float(bs_run.start['md_version']) >= 1.3 or scan_type == 'fly':
             nums = [scan_args[2], scan_args[5]]
             steps = [ext / (num - 1) if num != 1 else 0 for ext, num in zip(exts, nums)]
         else:
@@ -1694,6 +1676,7 @@ class SRXScanPDF(FPDF):
         
         return data
     
+
     def _load_and_process_ad_data(self,
                                   bs_run,
                                   roi,
@@ -1961,8 +1944,17 @@ class SRXScanPDF(FPDF):
                 scan_meta_data['scan_type'] = start['scan']['type']
             else:
                 scan_meta_data['scan_type'] = 'UNKNOWN'
+            if 'sample_name' in start['scan']:
+                sample_name = start['scan']['sample_name']
+                if sample_name is not None and sample_name != '':
+                    scan_meta_data['sample_name'] = sample_name
+                else:
+                    scan_meta_data['sample_name'] = None
+            else:
+                scan_meta_data['sample_name'] = None
         else:
             scan_meta_data['scan_type'] = 'UNKNOWN'
+            scan_meta_data['sample_name'] = None
 
         if 'time' in stop:
             scan_meta_data['stop_time'] = stop['time']
