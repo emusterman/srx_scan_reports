@@ -5,6 +5,10 @@ import skbeam.core.constants.xrf as xrfC
 from itertools import combinations_with_replacement
 from scipy.stats import mode
 
+from scipy import sparse
+from scipy.sparse.linalg import spsolve
+from scipy.linalg import cholesky
+
 from . import c
 
 # Get elemental information
@@ -113,26 +117,50 @@ def find_xrf_rois(xrf,
         # Only try to find rois if the max_roi_num is not satisfied by specific_elements inputs
         if num_interesting_rois < max_roi_num:
             # Do not modify the original data
-            xrf = xrf.copy()
+            xrf = xrf.copy().astype(float)
+
+            # Estimate compton energy
+            compE = incident_energy / (1 + (incident_energy / 511000) * (1 - np.cos(np.radians(120))))
 
             # Crop XRF and energy to reasonable limits (Assuming 10 eV steps)
             # No peaks below 1000 eV or above 85% of incident energy
-            en_range = slice(int(1e3 / en_step), int(0.9 * incident_energy / en_step))
+            en_range = slice(int(1e3 / en_step), int((compE - 10) / en_step))
             xrf = xrf[en_range]
             energy = energy[en_range]
 
-            # Remove invalid data_points (mostly zeros)
-            xrf[xrf < 1] = 1
+            # Background subraction with ARPLS
+            bkg = arpls(xrf)
+            xrf -= bkg
 
-            # Estimate background and noise
-            bkg = mode(xrf)[0] * (200 / en_step)
-            noise = np.sqrt(bkg)
+            # Remove invalid data_points
+            xrf[xrf < 1] = 1
 
             # Find peaks based on log prominence
             peaks, proms = find_peaks(np.log(xrf), prominence=log_prominence)
 
             # Blindly find intensity from 200 eV window (assuming 10 eV steps)
-            peak_snr = [(np.sum(xrf[peak - int(100 / en_step) : peak + int(100 / en_step)]) - bkg) / noise for peak in peaks]
+            peak_snr = []
+            for peak in peaks:
+                min_ind = max([0, peak - int(100 / en_step)])
+                max_ind = min([len(xrf) - 1, peak + int(100 / en_step)])
+                peak_slice = slice(min_ind, max_ind)
+                signal = np.sum(xrf[peak_slice])
+                noise = np.sqrt(np.sum(bkg[peak_slice]))
+                peak_snr.append(signal / noise)
+
+
+            # # Remove invalid data_points (mostly zeros)
+            # xrf[xrf < 1] = 1
+
+            # # Estimate background and noise
+            # bkg = mode(xrf)[0] * (200 / en_step)
+            # noise = np.sqrt(bkg)
+
+            # # Find peaks based on log prominence
+            # peaks, proms = find_peaks(np.log(xrf), prominence=log_prominence)
+
+            # # Blindly find intensity from 200 eV window (assuming 10 eV steps)
+            # peak_snr = [(np.sum(xrf[peak - int(100 / en_step) : peak + int(100 / en_step)]) - bkg) / noise for peak in peaks]
 
             # Sort the peaks by snr
             sorted_peaks = [x for y, x in sorted(zip(peak_snr, peaks), key=lambda pair: pair[0], reverse=True)]
@@ -144,11 +172,16 @@ def find_xrf_rois(xrf,
             # Identify peaks
             peak_labels = []
             for peak_ind, peak_en in enumerate(peak_energies):
+                if verbose:
+                    print(f'Peak {peak_ind} has energy of {peak_en} eV.')
                 
                 # Conditions to stop processing
                 if (num_interesting_rois == max_roi_num # reached max roi count
                     or (sorted_snr[peak_ind] < snr_cutoff # peak snr is now below cutoff
                         and num_interesting_rois >= min_roi_num)): # and enough rois have been identified
+                    if verbose:
+                        print(f'Number of interesting rois has reach the maximum of {max_roi_num} '
+                              + f'or the Signal-to-Noise ratio has fallen below the cutoff of {snr_cutoff}.')
                     break
 
                 PEAK_FOUND = False
@@ -163,6 +196,8 @@ def find_xrf_rois(xrf,
                         if np.abs(peak_en - line_en) < energy_tolerance:
                             PEAK_FOUND = True
                             peak_labels.append(f'{el.sym}_{line}')
+                            if verbose:
+                                print(f'Found lesser peak for {el.sym}_{line}, but not including it in rois!')
                             break
                     else:
                         continue
@@ -179,6 +214,8 @@ def find_xrf_rois(xrf,
                         if np.abs(peak_en - (found_peak_en - esc_en)) < energy_tolerance * 2: # double for error propagation
                             PEAK_FOUND = True
                             peak_labels.append(f'{found_peak_label}_escape')
+                            if verbose:
+                                print(f'Found escape peak for {found_peak_label}, but not including it in rois!')
                             break
                 
                 # Now check if it is a pile-up or sum peak
@@ -198,6 +235,8 @@ def find_xrf_rois(xrf,
                         if np.abs(peak_en - sum_en) < energy_tolerance * 2: # double for error propagation
                             PEAK_FOUND = True
                             peak_labels.append(comb_label)
+                            if verbose:
+                                print(f'Found combination peak labeled {comb_label}, but not including it in rois!')
                             break
 
                 # Otherwise check other elements based on strongest fluorescence
@@ -211,6 +250,8 @@ def find_xrf_rois(xrf,
                                 peak_labels.append(f'{el.sym}_{line}')
                                 if el.sym not in boring_elements:
                                     num_interesting_rois += 1
+                                if verbose:
+                                    print(f'Found major peak {el.sym}_{line}!')
                                 break
                         else:
                             continue
@@ -219,9 +260,13 @@ def find_xrf_rois(xrf,
                         found_elements.append(int(peak_en))
                         peak_labels.append('Unknown')
                         num_interesting_rois += 1
+                        if verbose:
+                            print(f'Found unknown peak around {peak_en} eV and could not determine its origin.')
 
         # Generate new ROIS
         rois, roi_labels = [], []
+        if verbose:
+            print('')
         for el in found_elements:
             # Add specified lines first
             if isinstance(el, xrfC.XrfElement):
@@ -269,3 +314,75 @@ def find_xrf_rois(xrf,
                     print(f'Cannot generate ROI for {el.sym}!')
 
         return rois, roi_labels
+
+
+def arpls(y, lam=1e3, ratio=0.01, itermax=10000):
+
+    """
+    Baseline correction using asymmetrically
+    reweighted penalized least squares smoothing
+    Sung-June Baek, Aaron Park, Young-Jin Ahna and Jaebum Choo,
+    Analyst, 2015, 140, 250 (2015)
+ 
+    Abstract
+ 
+    Baseline correction methods based on penalized least squares are successfully
+    applied to various spectral analyses. The methods change the weights iteratively
+    by estimating a baseline. If a signal is below a previously fitted baseline,
+    large weight is given. On the other hand, no weight or small weight is given
+    when a signal is above a fitted baseline as it could be assumed to be a part
+    of the peak. As noise is distributed above the baseline as well as below the
+    baseline, however, it is desirable to give the same or similar weights in
+    either case. For the purpose, we propose a new weighting scheme based on the
+    generalized logistic function. The proposed method estimates the noise level
+    iteratively and adjusts the weights correspondingly. According to the
+    experimental results with simulated spectra and measured Raman spectra, the
+    proposed method outperforms the existing methods for baseline correction and
+    peak height estimation.
+ 
+    Inputs:
+        y:
+            input data (i.e. chromatogram of spectrum)
+        lam:
+            parameter that can be adjusted by user. The larger lambda is,
+            the smoother the resulting background, z
+        ratio:
+            weighting deviations: 0 < ratio < 1, smaller values allow less negative values
+        itermax:
+            number of iterations to perform
+    Output:
+        the fitted background vector
+ 
+    """   
+
+    if not np.all(np.isfinite(y)):
+        raise ValueError("Input y to arPLS contains NaNs or infs")
+ 
+    N = len(y)
+    #  D = sparse.csc_matrix(np.diff(np.eye(N), 2))
+    D = sparse.eye(N, format='csc')
+    D = D[1:] - D[:-1]  # numpy.diff( ,2) does not work with sparse matrix. This is a workaround.
+    D = D[1:] - D[:-1]
+
+    H = lam * D.T * D
+    w = np.ones(N)
+ 
+    for i in range(itermax):
+        W = sparse.diags(w, 0, shape=(N, N))
+        WH = sparse.csc_matrix(W + H)     
+        # Check WH before cholesky
+        if not np.all(np.isfinite(WH.data)):
+            raise ValueError("WH contains NaNs or infs before Cholesky decomposition.")       
+        C = sparse.csc_matrix(cholesky(WH.todense()))
+        z = spsolve(C, spsolve(C.T, w * y))
+        d = y - z
+        dn = d[d < 0]
+        m = np.mean(dn)
+        s = np.std(dn)
+        val = 2 * (d - (2 * s - m)) / s
+        val_clipped = np.clip(val, a_min=None, a_max=100) # prevent overflow exp warning
+        wt = 1. / (1 + np.exp(val_clipped))
+        if np.linalg.norm(w - wt) / np.linalg.norm(w) < ratio:
+            break
+        w = wt
+    return z
