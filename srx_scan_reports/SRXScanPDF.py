@@ -31,7 +31,10 @@ class SRXScanPDF(FPDF):
 
     def __init__(self, font_style='helvetica', verbose=False):
         FPDF.__init__(self)
-        self.set_auto_page_break(False)
+
+        # Turn off auto_page_break and update bottom margin
+        self._footer_line_height = 5
+        self.set_auto_page_break(False, margin=self.b_margin + (self._footer_line_height / 2))
         self.set_font(font_style)
 
         # Custom
@@ -130,10 +133,24 @@ class SRXScanPDF(FPDF):
         if self.disable_footer:
             return
 
-        self.set_xy(self.x, -15)
         self.set_font('helvetica', size=10)
-        self.cell(0, 10, f'Page {self.total_pages()}', align='C')
-        self.cell(0, 10, f'Generated on {ttime.ctime()}', align='R')
+        self.set_xy(self.x, 5 - self.b_margin) # 5 offset from lowest scan information
+
+        with self.table(
+                borders_layout='None',
+                first_row_as_headings=False,
+                line_height=self._footer_line_height,
+                col_widths=((self.epw - 15) / 2, 15, (self.epw - 15) / 2),
+                width=self.epw,
+                align='L',
+                text_align=('LEFT', 'CENTER', 'RIGHT'),
+                v_align='BOTTOM',
+                padding=0
+                ) as table:
+            row = table.row()
+            row.cell('Preliminary data analysis:\nNOT INTENDED FOR PUBLICATION')
+            row.cell(f'Page {self.total_pages()}')
+            row.cell(f'Generated on {ttime.ctime()}')
 
 
     @property
@@ -346,7 +363,7 @@ class SRXScanPDF(FPDF):
                 if i == 0:
                     self.set_font(size=self._banner_font_size)
         
-        # Do not add reference positions for failed scans or optimizers?
+        # Do not add reference positions for failed scans or optimizers
         if (scan_data['scan_type'] in ['PEAKUP', 'OPTIMIZE_SCALERS']):
             if add_space:
                 self.set_xy(self.l_margin, self.y + self._gap_height)
@@ -681,11 +698,11 @@ class SRXScanPDF(FPDF):
                 # Load summed data
                 if scan_type == 'fly':
                     try:
-                        xrf_sum = np.sum(bs_run[stream]['data']['xs_fluor'][..., :7, :2500], axis=(0, 1, 2)).astype(np.float32)
+                        xrf_sum = np.sum(bs_run[stream]['data']['xs_fluor'][..., :7, :2500], axis=(0, 1, 2))
                     except MemoryError:
                         # Dask version
                         print('WARNING: Dask invoked for sum XRF spectra!')
-                        xrf_sum = da.asarray(bs_run[stream]['data']['xs_fluor'])[..., :7, :2500].sum(axis=(0, 1, 2)).compute().astype(np.float32)
+                        xrf_sum = da.asarray(bs_run[stream]['data']['xs_fluor'])[..., :7, :2500].sum(axis=(0, 1, 2)).compute()
                 else:
                     xrf_sum = np.asarray([bs_run[stream]['data'][f'xs_channel0{ind + 1}_fluor'][..., :2500] for ind in range(7)]).sum(axis=(0, 1))
                     
@@ -1548,7 +1565,7 @@ class SRXScanPDF(FPDF):
             # Check for snake
             if (scan_type == 'fly'
                 and 'snake' in bs_run.start['scan']
-                and bs_run.start['scan']):
+                and bs_run.start['scan']['snake']):
                 # Flip snaked rows
                 for row_ind in range(1, data.shape[0], 2):
                     data[row_ind] = data[row_ind][::-1]
