@@ -163,8 +163,8 @@ def generate_scan_report(start_id=None,
     Raises
     ------
     ValueError if insufficient information is provided to determine the
-        report write location, or if the start_id is greater than the
-        end_id.
+        report write location, if the start_id is greater than the
+        end_id, or if the start_id correctly interpreted.
     TypeError if key in kwargs is not expected.
     
     Examples
@@ -200,10 +200,15 @@ def generate_scan_report(start_id=None,
     # Parse requested inputs
     # Get data from start id first
     if start_id is not None:
-        if start_id == -1:
-            start_id = int(c[-1].start['scan_id'])
+        start_id = int(start_id)
+        if start_id < 0:
+            start_id = int(c[start_id].start['scan_id'])
+        elif start_id == 0:
+            err_str = ('Scan IDs of zero index are not supported. '
+                       + 'Please chose explicit scan ID or indexing less than zero.')
+            raise ValueError(err_str)
         else:
-            start_id = int(start_id)
+            pass # Everything is fine
 
         if start_id in c:
             start_cycle = c[start_id].start['cycle']
@@ -239,7 +244,7 @@ def generate_scan_report(start_id=None,
                 err_str = ('Cannot determine write location. Please '
                            + 'provide start_id of previous scan or '
                            + 'cycle and proposal_id.')
-                raise ValueError(err_str)               
+                raise ValueError(err_str)          
 
     # Default to proposal information next. This may be more popular
     elif proposal_id is not None and cycle is not None:
@@ -274,7 +279,7 @@ def generate_scan_report(start_id=None,
     elif end_id is not None:
         end_id = int(end_id)
         if end_id < start_id:
-            err_str = (f'end_id ({end_id}) of must be greater than or '
+            err_str = (f'end_id ({end_id}) must be greater than or '
                        + f'equal to start_id ({start_id}).')
             raise ValueError(err_str)
     current_id = start_id # Create current_id as counter
