@@ -8,7 +8,9 @@ import io
 from PyPDF2 import PdfReader, PdfWriter, PdfMerger
 
 from tiled.queries import Key
-from httpx import ReadTimeout
+from httpx import ReadTimeout, RemoteProtocolError, HTTPStatusError
+
+from PyQt5.QtCore import QThread, QCoreApplication
 
 from .find_xrf_rois import find_xrf_rois
 from .SRXScanPDF import SRXScanPDF
@@ -146,6 +148,13 @@ def generate_scan_report(start_id=None,
                 guaranteed inclusion in the report. Theses elements
                 will appear in the order given. By default, no elements
                 will be guaraneteed.
+            boring_elements : list, optional
+                List of element abbreviats as strings which may exist
+                in the sample, but will be excluded from plotting in
+                the report. By default Argon is considered boring.
+            excluded_elements : list, optional
+                List of element abbreviations as atrings which will be
+                completely excluded from consideration in the report.
             log_prominence : float, optional
                 The prominence value passed to scipy.signal.find_peaks
                 function of the log of the integrated XRF spectra.
@@ -184,6 +193,11 @@ def generate_scan_report(start_id=None,
     depending on the XRF signal.
     """
 
+    if verbose:
+        print('Report generate kwargs are:')
+        print(f'\t{start_id=}\n\t{end_id=}\n\t{proposal_id=}\n\t{cycle=}\n\t{wd=}\n\t{continuous=}\n\t{verbose=}')
+        print(f'{kwargs=}')
+
     # Quick function to get keyword argument names
     get_kwargs = lambda func : func.__code__.co_varnames[func.__code__.co_argcount - len(func.__defaults__) : func.__code__.co_argcount]
 
@@ -196,10 +210,32 @@ def generate_scan_report(start_id=None,
         if key not in useful_kwargs:
             err_str = f"generate_scan_report got an unexpected keyword argument '{key}'"
             raise TypeError(err_str)
-    
+
+    # Define Helper functions at runtime
+    if QCoreApplication.instance() is not None:
+        GUI_RUNNING = True
+        def interrupt_check():
+            if QThread.currentThread().isInterruptionRequested():
+                raise KeyboardInterrupt
+
+        def interruptible_sleep(seconds):
+            for _ in range(int(seconds * 10)): # Check every 100ms
+                interrupt_check()
+                QThread.msleep(100)
+    else: # Not running a gui
+        GUI_RUNNING = False
+        def interrupt_check():
+            pass
+        
+        def interruptible_sleep(seconds):
+            ttime.sleep(seconds)
+        
     # Parse requested inputs
     # Get data from start id first
     if start_id is not None:
+        if verbose:
+            print(f'Determining report write location by start_id {start_id}')
+
         start_id = int(start_id)
         if start_id < 0:
             start_id = int(c[start_id].start['scan_id'])
@@ -248,6 +284,9 @@ def generate_scan_report(start_id=None,
 
     # Default to proposal information next. This may be more popular
     elif proposal_id is not None and cycle is not None:
+        if verbose:
+            print(f'Determine report write location by proposal_id {proposal_id} and cycle {cycle}.')
+
         if wd is None:
             wd = f'/nsls2/data3/srx/proposals/{cycle}/pass-{proposal_id}'
         lim_c = c.search(Key('cycle') == str(cycle)).search(Key('proposal.proposal_id') == str(proposal_id))
@@ -262,6 +301,7 @@ def generate_scan_report(start_id=None,
         else:
             # Hoping the next scan will be correct
             start_id = int(c[-1].start['scan_id']) + 1
+            end_id = None
     
     else:
         err_str = ('Cannot determine write location. Please provide'
@@ -350,8 +390,12 @@ def generate_scan_report(start_id=None,
             # Current scan has yet to finish. Give it some time.
             if WAIT:
                 wait_time = 60
-                print(f'Current scan ID {current_id} not yet finished. {wait_iter} minutes since last scan added...', end='\r', flush=True)
-                ttime.sleep(wait_time)
+                ostr = (f'Current scan ID {current_id} not yet '
+                        + f'finished. {wait_iter} minutes since last '
+                        + 'scan added...')
+                print(ostr, end='\r', flush=True)
+                # ttime.sleep(wait_time)
+                interruptible_sleep(wait_time)
                 wait_iter += 1
                 continue
             else:
@@ -360,6 +404,7 @@ def generate_scan_report(start_id=None,
                     wait_iter = 0
             
             # Third check if the current_id is within the proposal
+            interrupt_check()
             scan_report = SRXScanPDF(verbose=verbose)
             scan_report.get_proposal_scan_data(current_id)
             if all([scan_report.exp_md[key] == exp_md[key]
@@ -381,6 +426,7 @@ def generate_scan_report(start_id=None,
                     break                
 
             # Final check performed on first successful current_id only
+            interrupt_check()
             if current_pdf is None:
                 print(f'Initializing scan report...')
                 # Create first pdf page
@@ -402,6 +448,8 @@ def generate_scan_report(start_id=None,
                 scan_report = SRXScanPDF(verbose=verbose)
                 scan_report.exp_md = exp_md
             
+            if verbose:
+                print('#' * 72)
             print(f'Adding scan {current_id}...')
             num_pages = len(current_pdf.pages)
             scan_report._appended_pages = num_pages - 1
@@ -414,10 +462,13 @@ def generate_scan_report(start_id=None,
             # Add new scan
             try:
                 scan_report.add_scan(current_id, **kwargs)
-            except ReadTimeout as e:
-                print(f'Error encountered reading data.\n\tReadTimeout: {e}')
+                interrupt_check()
+            except (ReadTimeout, RemoteProtocolError, HTTPStatusError) as e:
+                print(f'Error encountered reading data. {e.__class__.__name__}: {e}')
+                # print(f'Error encountered reading data.\n\tReadTimeout: {e}')
                 print('Waiting for 1 minute and trying again...')
-                ttime.sleep(60)
+                # ttime.sleep(60)
+                interruptible_sleep(60)
                 continue
             # Update md
             pdf_md = {'current_id' : current_id,
@@ -449,23 +500,50 @@ def generate_scan_report(start_id=None,
             current_id += 1
 
         except KeyboardInterrupt:
+            # Get current version of scan report
+            new_filename = f'scan{start_id}-{current_id - 1}_report'
+            new_pdf_path = os.path.join(wd, f'{new_filename}.pdf')
             try:
-                print('') # for the '^C'
-                print('KeyboardIterrupt triggered; report generation paused. Waiting 10 sec before exiting...')
-                print('Press ctrl+C again to finalize and cleanup report in its current state.')
-                ttime.sleep(10)
-                break
+                if not GUI_RUNNING:
+                    print('') # for the '^C'
+                    print('KeyboardIterrupt triggered; report generation paused. Waiting 10 sec before exiting...')
+                    print('Press ctrl+C again to finalize and cleanup report in its current state.')
+                    ttime.sleep(10)
+                    # interruptible_sleep(10)
+                # No time for interrupts if GUI Running
+                # break
+                return md_path, pdf_path, new_pdf_path
             except KeyboardInterrupt:
                 # Cleanup files
                 print('') # for the '^C'
                 print(f'Report generation finalized on scan {current_id}. Cleaning up files in their current state...')
-                new_filename = f'scan{start_id}-{current_id - 1}_report'
-                new_pdf_path = os.path.join(wd, f'{new_filename}.pdf')
                 os.rename(pdf_path, new_pdf_path)
                 os.remove(md_path)
-                break
+                print('done!')
+                # break
+                return
         except Exception as e:
             print(f'Error encountered for scan {current_id}. Pausing report generation.')
+            if GUI_RUNNING:
+                print(e)
+                # Return values to allow for a stop command
+                return md_path, pdf_path, new_pdf_path
             raise e
 
     print('done!')
+    return
+
+
+# Helper functions
+
+def interrupt_check():
+    if QThread.currentThread().isInterruptionRequested():
+        raise KeyboardInterrupt
+
+
+def interruptible_sleep(seconds):
+    for _ in range(int(seconds * 10)): # Check every 100ms
+        interrupt_check()
+        QThread.msleep(100)
+
+

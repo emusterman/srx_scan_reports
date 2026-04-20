@@ -12,26 +12,29 @@ from scipy.linalg import cholesky
 from . import c
 
 # Get elemental information
-possible_elements = ['Si', 'P', 'S', 'Cl', 'Ar', 'K', 'Ca', 'Sc', 'Ti', 'V',
-                     'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Ga', 'Ge', 'As',
-                     'Se', 'Br', 'Kr', 'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Tc',
-                     'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn', 'Sb', 'Te', 'I',
-                     'Xe', 'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Pm', 'Sm', 'Eu',
-                     'Gd', 'Tb', 'Dy', 'Ho', 'Er', 'Tm', 'Yb', 'Lu', 'Hf', 'Ta',
-                     'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi',
-                     'Po', 'At', 'Rn', 'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U', 'Np',
-                     'Pu', 'Am', 'Cm', 'Bk', 'Cf']
+default_possible_elements = [
+    'Si', 'P', 'S', 'Cl', 'Ar', 'K', 'Ca', 'Sc', 'Ti', 'V',
+    'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Ga', 'Ge', 'As',
+    'Se', 'Br', 'Kr', 'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Tc',
+    'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn', 'Sb', 'Te', 'I',
+    'Xe', 'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Pm', 'Sm', 'Eu',
+    'Gd', 'Tb', 'Dy', 'Ho', 'Er', 'Tm', 'Yb', 'Lu', 'Hf', 'Ta',
+    'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi',
+    'Po', 'At', 'Rn', 'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U', 'Np',
+    'Pu', 'Am', 'Cm', 'Bk', 'Cf']
 
-boring_elements = ['Ar']
+default_boring_elements = ['Ar']
+default_excluded_elements = []
 
-elements = [xrfC.XrfElement(el) for el in possible_elements]
-edges = ['k', 'l1', 'l2', 'l3']
+elements = [xrfC.XrfElement(el) for el in default_possible_elements]
+# edges = ['k', 'l1', 'l2', 'l3']
+edges = ['k', 'l3', 'l2', 'l1']
 # edges = ['k', 'l3']
-lines = ['ka1', 'kb1', 'la1', 'lb1', 'lb2', 'lg1', 'la2', 'lb3', 'lb4', 'll', 'ma1', 'mb']
+lines = ['ka1', 'kb1', 'la1', 'lb1', 'lb2', 'lg1', 'la2', 'lb3', 'll', 'lb4', 'lb5', 'lg3', 'lg2', 'lg4', 'ma1', 'mb']
 major_lines = ['ka1', 'la1', 'lb1', 'ma1']
 roi_lines = ['ka1', 'la1', 'ma1']
 
-all_edges, all_edges_names, all_lines, all_lines_names = [], [], [], []
+all_edges, all_edges_names = [], []
 for el in elements:
     for edge in edges:
         edge_en = el.bind_energy[edge] * 1e3
@@ -45,6 +48,8 @@ def find_xrf_rois(xrf,
                   energy,
                   incident_energy,
                   specific_elements=None,
+                  boring_elements=None,
+                  excluded_elements=None,
                   min_roi_num=0,
                   max_roi_num=25, # Hard capping for too many elements
                   log_prominence=1,
@@ -57,6 +62,10 @@ def find_xrf_rois(xrf,
         # Parse out scan_kwargs
         if 'specific_elements' in scan_kwargs:
             specific_elements = scan_kwargs.pop('specific_elements')
+        if 'boring_elements' in scan_kwargs:
+            boring_elements = scan_kwargs.pop('boring_elements')
+        if 'excluded_elements' in scan_kwargs:
+            excluded_elements = scan_kwargs.pop('excluded_elements')
         if 'min_roi_num' in scan_kwargs:
             min_roi_num = scan_kwargs.pop('min_roi_num')
         if 'max_roi_num' in scan_kwargs:
@@ -69,6 +78,15 @@ def find_xrf_rois(xrf,
             esc_en = scan_kwargs.pop('esc_en')
         if 'snr_cutoff' in scan_kwargs:
             snr_cutoff = scan_kwargs['snr_cutoff']
+
+        if boring_elements is None:
+            boring_elements = default_boring_elements
+        if excluded_elements is None:
+            excluded_elements = default_excluded_elements
+        
+        # Update list of elements to remove exclusions
+        possible_elements = set(default_possible_elements) - set(excluded_elements)
+        elements = [xrfC.XrfElement(el) for el in possible_elements]
         
         # Verbosity
         if verbose:
@@ -90,7 +108,8 @@ def find_xrf_rois(xrf,
         num_interesting_rois = 0
         if specific_elements is not None:
             for el in specific_elements:
-                # print(f'{el} in specific elements')
+                if verbose:
+                    print(f'{el} in specific elements')
                 line = None
                 if '_' in el:
                     el, line = el.split('_')
@@ -123,8 +142,10 @@ def find_xrf_rois(xrf,
             compE = incident_energy / (1 + (incident_energy / 511000) * (1 - np.cos(np.radians(120))))
 
             # Crop XRF and energy to reasonable limits (Assuming 10 eV steps)
-            # No peaks below 1000 eV or above 85% of incident energy
-            en_range = slice(int(1e3 / en_step), int((compE - 10) / en_step))
+            # No peaks below 1500 eV or 100 eV less than the Compton energy
+
+            # Set practical energy bounds
+            en_range = slice(int(1.5e3 / en_step), int((compE - 100) / en_step))
             xrf = xrf[en_range]
             energy = energy[en_range]
 
@@ -141,12 +162,19 @@ def find_xrf_rois(xrf,
             # Blindly find intensity from 200 eV window (assuming 10 eV steps)
             peak_snr = []
             for peak in peaks:
+
+                # Assume the peak is well-behaved for now
                 min_ind = max([0, peak - int(100 / en_step)])
                 max_ind = min([len(xrf) - 1, peak + int(100 / en_step)])
                 peak_slice = slice(min_ind, max_ind)
                 signal = np.sum(xrf[peak_slice])
                 noise = np.sqrt(np.sum(bkg[peak_slice]))
-                peak_snr.append(signal / noise)
+
+                # Avoid some spurious signals like too narrow peaks
+                if xrf[peak] < np.max(xrf) / 1e4:
+                    peak_snr.append(min([snr_cutoff - 1, signal / noise]))
+                else:
+                    peak_snr.append(signal / noise)
 
 
             # # Remove invalid data_points (mostly zeros)
@@ -174,14 +202,16 @@ def find_xrf_rois(xrf,
             for peak_ind, peak_en in enumerate(peak_energies):
                 if verbose:
                     print(f'Peak {peak_ind} has energy of {peak_en} eV.')
-                
+
                 # Conditions to stop processing
-                if (num_interesting_rois == max_roi_num # reached max roi count
-                    or (sorted_snr[peak_ind] < snr_cutoff # peak snr is now below cutoff
-                        and num_interesting_rois >= min_roi_num)): # and enough rois have been identified
+                if num_interesting_rois == max_roi_num:
                     if verbose:
-                        print(f'Number of interesting rois has reach the maximum of {max_roi_num} '
-                              + f'or the Signal-to-Noise ratio has fallen below the cutoff of {snr_cutoff}.')
+                        print(f'Number of interesting rois has reached the maximum of {max_roi_num}.')
+                    break
+                elif (sorted_snr[peak_ind] < snr_cutoff # peak snr is now below cutoff
+                        and num_interesting_rois >= min_roi_num): # and enough rois have been identified
+                    if verbose:
+                        print(f'Signal-to-Noise ratio has fallen below cutoff of {snr_cutoff} and minimum number of rois has been satisfied.')
                     break
 
                 PEAK_FOUND = False
@@ -248,7 +278,8 @@ def find_xrf_rois(xrf,
                                 PEAK_FOUND = True
                                 found_elements.append(el)
                                 peak_labels.append(f'{el.sym}_{line}')
-                                if el.sym not in boring_elements:
+                                # Add element, but only count if not boring
+                                if el.sym not in boring_elements: 
                                     num_interesting_rois += 1
                                 if verbose:
                                     print(f'Found major peak {el.sym}_{line}!')
@@ -256,12 +287,42 @@ def find_xrf_rois(xrf,
                         else:
                             continue
                         break
-                    else: # Unlikely
-                        found_elements.append(int(peak_en))
-                        peak_labels.append('Unknown')
-                        num_interesting_rois += 1
-                        if verbose:
-                            print(f'Found unknown peak around {peak_en} eV and could not determine its origin.')
+
+                # Finally if a major peak cannot be found, the major peak may be overlapping with another indentified line
+                # Check for minor peaks that match this condition
+                if not PEAK_FOUND:
+                    for line in lines:
+                        if line in major_lines:
+                            continue # already checked
+                        for el in elements:
+                            line_en = el.emission_line[line] * 1e3
+                            if np.abs(peak_en - line_en) < energy_tolerance:
+                                # Check the associated major line for overlap
+                                major_line = major_lines[[l[0] for l in major_lines].index(line[0])]
+                                major_line_en = el.emission_line[line] * 1e3
+                                # Check if peak overlaps with any previous peak energy
+                                # Tolerance is greater due to peak broadening
+                                if np.any(np.abs(np.array(peak_energies[:peak_ind]) - major_line_en) > 4 * energy_tolerance):
+                                    PEAK_FOUND = True
+                                    found_elements.append(el)
+                                    peak_labels.append(f'{el.sym}_{line}')
+                                    if el.sym not in boring_elements: 
+                                        num_interesting_rois += 1
+                                    if verbose:
+                                        print(f'Found minor peak {el.sym}_{line} with major peak obscured by another line!')
+                                    break
+                        else:
+                            continue
+                        break
+                
+                # Exhausted all indexing strategies. Label unknown
+                if not PEAK_FOUND:
+                    found_elements.append(int(peak_en))
+                    peak_labels.append('Unknown')
+                    num_interesting_rois += 1
+                    if verbose:
+                        print(f'Found unknown peak around {peak_en} eV and could not determine its origin.')
+
 
         # Generate new ROIS
         rois, roi_labels = [], []
@@ -302,7 +363,17 @@ def find_xrf_rois(xrf,
             # Slice major lines
             for line in roi_lines:
                 line_en = el.emission_line[line] * 1e3
-                if 1e3 < line_en < incident_energy:
+                if 'k' in line:
+                    bind_en = el.bind_energy['k'] * 1e3
+                elif 'l' in line:
+                    bind_en = el.bind_energy['l3'] * 1e3
+                elif 'm' in line:
+                    bind_en = el.bind_energy['m5'] * 1e3
+                else:
+                    raise KeyError(f'Unknown fluorescence line {line}.')
+
+                # Check if binding energy is below incident energy
+                if 1.5e3 < bind_en < incident_energy - 50:
                     if verbose:
                         print(f'Highest yield fluorescence line for {el.sym} is {line}.')
                     rois.append(slice(int((line_en / en_step) - (100 / en_step)), int((line_en / en_step) + (100 / en_step))))

@@ -6,6 +6,9 @@ import functools
 
 from fpdf import FPDF
 
+import matplotlib
+matplotlib.use('cairo')
+
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
@@ -25,6 +28,7 @@ from .find_xrf_rois import (
     all_edges_names
 )
 from . import c
+from . import config
 
 
 class SRXScanPDF(FPDF):
@@ -33,9 +37,12 @@ class SRXScanPDF(FPDF):
         FPDF.__init__(self)
 
         # Turn off auto_page_break and update bottom margin
+        self._b_margin = 20
         self._footer_line_height = 5
-        self.set_auto_page_break(False, margin=self.b_margin + (self._footer_line_height / 2))
+        # print(f'{self.eph=}')
+        self.set_auto_page_break(False, margin=self._b_margin + (self._footer_line_height / 2))
         self.set_font(font_style)
+        # print(f'{self.eph=}')
 
         # Custom
         self.exp_md = {}         
@@ -85,7 +92,8 @@ class SRXScanPDF(FPDF):
 
         self.set_font(size=11)
 
-        filepath = os.path.dirname(os.path.dirname(__file__))
+        # filepath = os.path.dirname(os.path.dirname(__file__))
+        filepath = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         filepath = os.path.join(filepath, 'data/srx_logo.png')
         # self.image('/nsls2/users/emusterma/Documents/Repositories/srx_scan_reports/data/srx_logo.png', h=15, keep_aspect_ratio=True)
         self.image(filepath, h=15, keep_aspect_ratio=True)
@@ -140,7 +148,7 @@ class SRXScanPDF(FPDF):
                 borders_layout='None',
                 first_row_as_headings=False,
                 line_height=self._footer_line_height,
-                col_widths=((self.epw - 15) / 2, 15, (self.epw - 15) / 2),
+                col_widths=((self.epw - 20) / 2, 20, (self.epw - 20) / 2),
                 width=self.epw,
                 align='L',
                 text_align=('LEFT', 'CENTER', 'RIGHT'),
@@ -199,7 +207,8 @@ class SRXScanPDF(FPDF):
                            space_needed=None):
         # Check remaining space on page and add new page if insufficient
         
-        space_available = self.eph - self.y - self.b_margin
+        # space_available = self.eph - self.y - self.b_margin
+        space_available = self.h - self.y - self.t_margin
         if space_needed is None:
             if num_images is None:
                 raise ValueError('Must define space_needed or num_images!')
@@ -211,20 +220,22 @@ class SRXScanPDF(FPDF):
         if self._verbose:
             print(f'Space needed for cell: {space_needed}')
             print(f'Space available: {space_available}')
+            print('Generating new page.')
 
         if space_available < space_needed:
             self.add_page()
+            self._start_y = self.y
 
 
     # Measure scan entry length. Useful for debugging
     def _verbose_scan_entry_length(func):
         @functools.wraps(func)
         def wrapped(self, *args, **kwargs):
-            start_y = self.y
+            self._start_y = self.y
             func(self, *args, **kwargs)
-            end_y = self.y
+            self._end_y = self.y
             if self._verbose:
-                print(f'Cell took {end_y - start_y} mm.')
+                print(f'Cell took {self._end_y - self._start_y} mm.')
         return wrapped
         
 
@@ -280,29 +291,29 @@ class SRXScanPDF(FPDF):
         elif scan_data['scan_type'] == 'VLM_SNAPSHOT':
             self.add_VLM_SNAPSHOT(bs_run, scan_data, scan_kwargs)
 
-        elif scan_data['scan_type'] in ['PEAKUP', 'OPTIMIZE_SCALERS']:
+        elif scan_data['scan_type'] in ['PEAKUP', 'OPTIMIZE_SCALERS', 'COMPUCENTRIC_CALIBRATION']:
             if include_optimizers:
-                start_y = self.y
+                self._start_y = self.y
                 self.request_cell_space(space_needed=(self._banner_height
                                                       + self._gap_height))
                 self.add_BASE_SCAN(scan_data, scan_kwargs, add_space=True)
-                end_y = self.y
+                self._end_y = self.y
                 if self._verbose:
-                    print(f'Cell took {end_y - start_y} mm.')
+                    print(f'Cell took {self._end_y - self._start_y} mm.')
 
         elif include_unknowns:
             warn_str = (f"WARNING: Scan {scan_id} of type {scan_data['scan_type']} "
                         + "not yet supported for SRX scan reports.")
             print(warn_str)
-            start_y = self.y
+            self._start_y = self.y
             self.request_cell_space(space_needed=(self._banner_height
                                                   + self._max_height
                                                   + self._gap_height
                                                   + self._offset_height))
             self.add_BASE_SCAN(scan_data, scan_kwargs, add_space=True)
-            end_y = self.y
+            self._end_y = self.y
             if self._verbose:
-                print(f'Unknown took {end_y - start_y} mm.')
+                print(f'Unknown took {self._end_y - self._start_y} mm.')
 
     
     def add_BASE_SCAN(self,
@@ -327,10 +338,25 @@ class SRXScanPDF(FPDF):
             duration = 'unknown'
 
         scan_labels = ['ID', 'Type', 'Status', 'Start', 'Stop', 'Duration']
-        if len(scan_data['scan_type']) <= 12:
-            scan_type_str = scan_data['scan_type']
-        else:
-            scan_type_str = f"{scan_data['scan_type'][:12]}..."
+        scan_type_str = scan_data['scan_type']
+        for i in range(len(scan_type_str)):
+            if i == 0:
+                if self.get_string_width(scan_type_str) <= (self.epw / 6):
+                    break
+                else:
+                    scan_type_str = scan_type_str[:-1]
+                    continue
+            if self.get_string_width(scan_type_str + f'...') <= (self.epw / 6):
+                scan_type_str += '...'
+                break
+            else:
+                scan_type_str = scan_type_str[:-1]
+                continue
+
+        # if len(scan_data['scan_type']) <= 12:
+        #     scan_type_str = scan_data['scan_type']
+        # else:
+        #     scan_type_str = f"{scan_data['scan_type'][:12]}..."
         scan_values = [str(scan_data['scan_id']),
                        scan_type_str,
                        scan_data['exit_status'].upper(),
@@ -608,8 +634,8 @@ class SRXScanPDF(FPDF):
             steps = [args[2], args[5]]
             nums = scan['shape']
         all_dets = [det for det in scan['detectors']]
-        useful_dets = [det for det in all_dets if det not in ['ring_current', 'nano_vlm']]
-        roi_dets = [det for det in useful_dets if det not in ignore_det_rois]        
+        useful_dets = [det for det in all_dets if det not in config.skip_dets]
+        roi_dets = [det for det in useful_dets if det not in ignore_det_rois]   
 
         table_values = [input_str,
                         ', '.join([str(motor) for motor in motors]),
@@ -627,9 +653,10 @@ class SRXScanPDF(FPDF):
             and stream in bs_run):
 
             # Load scaler for nomalization later. May be reloaded if plotting scaler keys
-            sclr_keys = ['i0', 'im']
             if scan_type == 'step':
-                sclr_keys = [f'sclr_{key}' for key in sclr_keys]
+                sclr_keys = [f'sclr_{key}' for key in config.norm_scalers]
+            else:
+                sclr_keys = config.norm_scalers
             
             for sclr_key in sclr_keys:
                 try:
@@ -660,24 +687,28 @@ class SRXScanPDF(FPDF):
             # Add scaler keys
             for scaler_roi in scaler_rois:
                 # This check could happen sooner...
-                if str(scaler_roi).lower() not in ['i0', 'im', 'it']:
+                if str(scaler_roi).lower() not in config.all_scalers:
                     warn_str = (f"WARNING: Scaler roi of {str(scaler_roi).lower()} "
-                                + "not in accepted scalers of ['i0', 'im', 'it']."
+                                + f"not in accepted scalers of {config.all_scalers}."
                                 + "\nSkipping scaler roi.")
                     print(warn_str)
                     continue
                 rois.append(str(scaler_roi).lower())
                 roi_labels.append(str(scaler_roi).lower())
             # Add area detectors
-            if 'dexela' in roi_dets:
-                rois.append('dexela')
-                roi_labels.append('dexela')
-            if 'merlin' in roi_dets:
-                rois.append('merlin')
-                roi_labels.append('merlin')
-            if 'eiger' in roi_dets:
-                rois.append('eiger')
-                roi_labels.append('eiger')
+            for det in config.area_dets:
+                if det in roi_dets:
+                    rois.append(det)
+                    roi_labels.append(det)
+            # if 'merlin' in roi_dets:
+            #     rois.append('merlin')
+            #     roi_labels.append('merlin')            
+            # if 'dexela' in roi_dets:
+            #     rois.append('dexela')
+            #     roi_labels.append('dexela')
+            # if 'eiger' in roi_dets:
+            #     rois.append('eiger')
+            #     roi_labels.append('eiger')
             # Add xs rois
             if ('xs' in roi_dets
                 and len(rois) < max_roi_num):
@@ -784,7 +815,7 @@ class SRXScanPDF(FPDF):
                 elif isinstance(roi, slice):
                     plot_func = lambda *a, **k : self._get_xrf_map_plot(*a, energy=energy, **k)
                 # XRD or DPC
-                elif roi in ['merlin', 'dexela', 'eiger']:
+                elif roi in config.area_dets:
                     plot_func = lambda *a, **k : self._get_ad_map_plot(*a, **k)
                 # Scaler or XBIC
                 elif roi in [str(s).lower() for s in scaler_rois]:
@@ -876,7 +907,7 @@ class SRXScanPDF(FPDF):
                 break
         else:
             all_dets = []
-        useful_dets = [det for det in all_dets if det not in ['nano_vlm', 'ring_current']]
+        useful_dets = [det for det in all_dets if det not in config.skip_dets]
 
         # Generate scan table information
         if scan_type == 'step':
@@ -953,18 +984,19 @@ class SRXScanPDF(FPDF):
                 roi_labels = scan['detectors']['xs'].values()
             else:
                 roi_labels = ['Unknown']
-                roi_label = roi_labels[0]
+                roi_label = 'Total XRF'
+                roi = slice(20, 2500)
             
             # Find best label. Should be first, but users can make mistakes
             if roi_label is None:
-                if self._verbose:
-                    print('Using ROI from scan metadata for XAS plotting.')
                 roi_labels = [label for label in roi_labels if label != '']
                 # Use first specified label with edge in energy range
                 for label in roi_labels:
                     el, line = label.split('_')
                     for edge, edge_name in zip(red_edges, red_edges_names):
                         if el == edge_name.split('_')[0]:
+                            if self._verbose:
+                                print('Using ROI from scan metadata for XAS plotting.')
                             roi_label = edge_name
                             line_en = xrfC.XrfElement(el).emission_line[line] * 1e3
                             roi = slice(int((line_en / en_step) - (100 / en_step)),
@@ -976,6 +1008,7 @@ class SRXScanPDF(FPDF):
                     else:
                         continue
                     break
+
                 # Otherwise pull from XRF
                 else:
                     if self._verbose:
@@ -988,21 +1021,29 @@ class SRXScanPDF(FPDF):
                     
                     xs_roi = find_xrf_rois(xrf_sum,
                                            np.arange(0, len(xrf_sum)) * en_step,
-                                           en_end)
+                                           scan['energy'] * 1e3)
                     
                     for roi, roi_label in zip(*xs_roi):
                         el, line = roi_label.split('_')
                         for edge, edge_name in zip(red_edges, red_edges_names):
                             if el == edge_name.split('_')[0]:
+                                if self._verbose:
+                                    print(f'Identified {edge_name} for ROI!')
+                                roi_label = edge_name
+                                line_en = xrfC.XrfElement(el).emission_line[line] * 1e3
+                                roi = slice(int((line_en / en_step) - (100 / en_step)),
+                                            int((line_en / en_step) + (100 / en_step)))
                                 # Reduce edges for consistency
                                 red_edges_names = [edge_name]
                                 red_edges = [edge]
                                 break
+                        else:
+                            continue
+                        break
                     # Give up
                     # TODO reduce edge names to best option
                     else:
-                        if self._verbose:
-                            print('Failed to find ROI from XRF spectrum. ROI fitting will be bad.')
+                        print('Failed to find ROI from XRF spectrum. ROI plotting will be bad.')
                         if len(red_edges) > 0:
                             roi_label = red_edges_names[0]
                             roi = int(np.round(red_edges[0] / 1e3))
@@ -1024,16 +1065,19 @@ class SRXScanPDF(FPDF):
                 en = bs_run['primary']['data']['energy_energy'][:].astype(np.float32)
                 if en[0] < 1e3:
                     en *= 1e3
+                # Pull from internal roi if they match and are appropriate
                 if roi_label == roi_labels[0]:
                     data = np.sum([bs_run['primary']['data'][f'xs_channel0{i + 1}_mcaroi01_total_rbv'][:] for i in range(7)], axis=0, dtype=np.float32)
+                # Otherwise pull from generate roi
                 else: 
                     data = np.sum([bs_run['primary']['data'][f'xs_channel0{i + 1}_fluor'][..., roi] for i in range(7)], axis=(0, -1), dtype=np.float32)
                 data /= bs_run['primary']['data']['sclr_i0'][:].astype(np.float32)
                 edge_ind = np.argmax(np.gradient(data, en))
-                el_edge = red_edges_names[np.argmin(np.abs(np.array(red_edges) - en[edge_ind]))]
+                # el_edge = red_edges_names[np.argmin(np.abs(np.array(red_edges) - en[edge_ind]))]
 
                 marker = np.asarray([[en[edge_ind], data[edge_ind]]])
-                title = f"Scan {bs_run.start['scan_id']}\n{el_edge} edge : {int(en[edge_ind])} eV"
+                # title = f"Scan {bs_run.start['scan_id']}\n{el_edge} edge : {int(en[edge_ind])} eV"
+                title = f"Scan {bs_run.start['scan_id']}\n{roi_label} edge : {int(en[edge_ind])} eV"
                 data = [data]
                 en = [en]
                 labels = None
@@ -1044,11 +1088,12 @@ class SRXScanPDF(FPDF):
                     en, data, marker, labels = [], [], [], []
                     for name in stream_names:
                         en_i = bs_run[name]['data']['energy'][0].astype(float)
+                        # Always pull from full fly scan data with generate roi
                         data_i = np.sum([bs_run[name]['data'][f'xs_id_mono_fly_channel0{ind + 1}'][..., roi]
                                          for ind in range(7)], axis=(0, -1))[0].astype(float).squeeze()
                         data_i /= bs_run[name]['data']['i0'][0].astype(float)
                         edge_ind = np.argmax(np.gradient(data_i, en_i))
-                        el_edge = red_edges_names[np.argmin(np.abs(np.array(red_edges) - en_i[edge_ind]))]
+                        # el_edge = red_edges_names[np.argmin(np.abs(np.array(red_edges) - en_i[edge_ind]))]
                         marker.append((en_i[edge_ind], data_i[edge_ind]))
 
                         data.append(data_i)
@@ -1056,7 +1101,8 @@ class SRXScanPDF(FPDF):
                     
                     labels = stream_names
                     # Title determined from last scan
-                    title = f"Scan {bs_run.start['scan_id']}\n{el_edge} edge : {int(np.mean(marker, axis=0)[0])} eV"
+                    # title = f"Scan {bs_run.start['scan_id']}\n{el_edge} edge : {int(np.mean(marker, axis=0)[0])} eV"
+                    title = f"Scan {bs_run.start['scan_id']}\n{roi_label} edge : {int(np.mean(marker, axis=0)[0])} eV"
                 except Exception as e:
                     err_str = (f"{e}: Error loading {roi_label} data "
                                 + f"from XRF_FLY scan {bs_run.start['scan_id']}. "
@@ -1135,7 +1181,7 @@ class SRXScanPDF(FPDF):
         input_str = (f"{np.round(scan_inputs[0], 0)}, {np.round(scan_inputs[1], 0)},"
                      + f"\n{int(scan_inputs[2])}, {np.round(scan_inputs[3], 2)}")
         all_dets = [det for det in scan['detectors']]
-        useful_dets = [det for det in all_dets if det not in ['nano_vlm', 'ring_current']]
+        useful_dets = [det for det in all_dets if det not in config.skip_dets]
         
         if scan_type.lower() == 'energy':
             scan_inputs = [float(en) for en in scan_inputs]
@@ -1182,16 +1228,18 @@ class SRXScanPDF(FPDF):
 
             # Load AD Data
             for det in useful_dets:
-                if (det not in ['dexela', 'merlin']
+                if (det not in config.area_dets
                     or 'primary' not in bs_run
                     or bs_run.stop['exit_status'] != 'success'):
                     continue
 
-                for key in ['sclr_i0', 'sclr_im']:
+                for key in [f'sclr_{sclr}' for sclr in config.norm_scalers]:
                     if key in bs_run['primary']['data']:
                         sclr = bs_run['primary']['data'][key][:].astype(float)
                         break
                 else:
+                    if self._verbose:
+                        print('Missing scaler normalization for step rocking curve.')
                     sclr = np.ones(len(rocking), dtype=float)
 
                 data, roi_str = self._load_and_process_ad_data(bs_run,
@@ -1234,8 +1282,8 @@ class SRXScanPDF(FPDF):
         scan_inputs = scan['scan_input']
         input_str = f"{scan_inputs[0]}, {scan_inputs[1]}"
         all_dets = [det for det in scan['detectors']]
-        useful_dets = [det for det in all_dets if det not in ['nano_vlm', 'ring_current']]
-        roi_dets = [det for det in useful_dets if det in ['merlin', 'dexela', 'eiger']]
+        useful_dets = [det for det in all_dets if det not in config.skip_dets]
+        roi_dets = [det for det in useful_dets if det in config.area_dets]
         table_values = [input_str,
                         f"{scan_inputs[0]}",
                         f"{scan['dwell']} sec",
@@ -1669,6 +1717,9 @@ class SRXScanPDF(FPDF):
     def _load_and_reshape_step_data(self,
                                     bs_run,
                                     roi):
+        if self._verbose:
+            print('Loading and reshaping step data...')
+        
         # Probably overkill ensuring the pixel grid is correct
         data = np.zeros(bs_run.start['scan']['shape'][::-1]) # must be reversed for [y, x]
         data[:] = np.nan # For unfinished plotting purposes
@@ -1700,12 +1751,14 @@ class SRXScanPDF(FPDF):
                                   sclr,
                                   max_axes=(-2, -1)
                                   ):
+        if self._verbose:
+            print('Loading and processing area detector data...')
 
         scan_type = bs_run.start['scan']['type']
-        if scan_type == 'XRF_FLY':
+        if scan_type in ['XRF_FLY', 'XAS_SLICE', 'FLY_ANGLE_RC']:
             stream_name = 'stream0'
         else:
-            stream_name = 'primary'                          
+            stream_name = 'primary'                       
 
         # Check for data
         if stream_name not in bs_run:
@@ -1723,7 +1776,7 @@ class SRXScanPDF(FPDF):
             return None, ''
 
         # Load dark-field if there
-        if 'dark' in bs_run:
+        if 'dark' in bs_run and roi == 'dexela': # Only dexela has dark-field from our detetors
             # Assume that this will always work for now...
             try:
                 dark = bs_run['dark']['data'][f'{roi}_image'][:].astype(np.float32)
@@ -1741,7 +1794,7 @@ class SRXScanPDF(FPDF):
 
         try:
             # Manual load data of fly-scanning map
-            if scan_type == 'XRF_FLY':
+            if scan_type in ['XRF_FLY', 'XAS_SLICE', 'FLY_ANGLE_RC']:
                 # Pseudo binning
                 # Saves memory, but at the cost of time
                 data_shape = bs_run[stream_name]['data'][f'{roi}_image'].shape
@@ -1762,7 +1815,7 @@ class SRXScanPDF(FPDF):
                 data = load_step_rc_data(int(bs_run.start['scan_id']), verbose=False)[0]
                 data = np.asarray(data[f'{roi}_image'], dtype=np.float32)
             
-            # Don't know an hope tiled works
+            # Don't know and hope tiled works
             else:
                 data = bs_run[stream_name]['data'][f'{roi}_image'][:].astype(np.float32)
 
@@ -1930,6 +1983,7 @@ class SRXScanPDF(FPDF):
             self.exp_md[key] = value
             
         return UPDATED_EXP_MD
+
 
     def get_start_scan_data(self,
                             bs_run):
