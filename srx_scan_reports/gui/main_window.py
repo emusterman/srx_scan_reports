@@ -17,8 +17,6 @@ from PyQt5.QtGui import QFont
 from .central_widget import CentralWidget
 
 
-
-
 _main_window_geometry = {
     "initial_height": 700,
     "initial_width": 1200,
