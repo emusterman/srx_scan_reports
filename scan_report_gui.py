@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
     QApplication
 )
 
+print('Importing SRX Scan Report GUI modules...')
 from srx_scan_reports.gui.main_window import MainWindow
 
 def run_gui():
@@ -22,4 +23,5 @@ def run_gui():
 
 
 if __name__ == "__main__":
+    print('Starting SRX Scan Report GUI...')
     run_gui()
