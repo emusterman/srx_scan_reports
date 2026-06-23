@@ -273,7 +273,7 @@ def generate_scan_report(start_id=None,
                 cycle = start_cycle
             
             if wd is None:
-                wd = f'/nsls2/data3/srx/proposals/{cycle}/pass-{proposal_id}'
+                wd = f'/nsls2/auto-storage/srx/proposals/{cycle}/pass-{proposal_id}'
         
         else:
             if wd is None:
@@ -288,7 +288,7 @@ def generate_scan_report(start_id=None,
             print(f'Determine report write location by proposal_id {proposal_id} and cycle {cycle}.')
 
         if wd is None:
-            wd = f'/nsls2/data3/srx/proposals/{cycle}/pass-{proposal_id}'
+            wd = f'/nsls2/auto-storage/srx/proposals/{cycle}/pass-{proposal_id}'
         lim_c = c.search(Key('cycle') == str(cycle)).search(Key('proposal.proposal_id') == str(proposal_id))
         if len(lim_c) > 0:
             start_id = int(lim_c[0].start['scan_id'])
@@ -523,6 +523,10 @@ def generate_scan_report(start_id=None,
                 # break
                 return
         except Exception as e:
+            # Get current version of scan report
+            new_filename = f'scan{start_id}-{current_id - 1}_report'
+            new_pdf_path = os.path.join(wd, f'{new_filename}.pdf')
+
             print(f'Error encountered for scan {current_id}. Pausing report generation.')
             if GUI_RUNNING:
                 print(e)
