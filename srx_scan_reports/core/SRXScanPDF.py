@@ -3,6 +3,7 @@ import time as ttime
 import dask.array as da
 import os
 import functools
+import h5py
 
 from fpdf import FPDF
 
@@ -978,12 +979,16 @@ class SRXScanPDF(FPDF):
             # XAS      
             roi_label = None
             if 'roi_names' in scan:
-                roi_labels = scan['roi_names']
+                scan_roi_labels = list(scan['roi_names'])
+                roi_labels = scan_roi_labels.copy()
             elif ('detectors' in scan
                   and isinstance(scan['detectors'], dict)):
-                roi_labels = scan['detectors']['xs'].values()
+                scan_roi_labels = list(scan['detectors']['xs'].values())
+                roi_labels = scan_roi_labels.copy()
             else:
+                scan_roi_labels = []
                 roi_labels = ['Unknown']
+                roi_line = None
                 roi_label = 'Total XRF'
                 roi = slice(20, 2500)
             
@@ -995,8 +1000,7 @@ class SRXScanPDF(FPDF):
                     el, line = label.split('_')
                     for edge, edge_name in zip(red_edges, red_edges_names):
                         if el == edge_name.split('_')[0]:
-                            if self._verbose:
-                                print('Using ROI from scan metadata for XAS plotting.')
+                            roi_line = label
                             roi_label = edge_name
                             line_en = xrfC.XrfElement(el).emission_line[line] * 1e3
                             roi = slice(int((line_en / en_step) - (100 / en_step)),
@@ -1004,6 +1008,8 @@ class SRXScanPDF(FPDF):
                             # Reduce edges for consistency
                             red_edges_names = [edge_name]
                             red_edges = [edge]
+                            if self._verbose:
+                                print(f'Using ROI {roi_label} from scan metadata for XAS plotting with {roi}.')
                             break
                     else:
                         continue
@@ -1017,8 +1023,21 @@ class SRXScanPDF(FPDF):
                         stream_names = [key for key in bs_run.keys() if 'scan' in key]
                         xrf_sum = np.sum([bs_run[stream_names[0]]['data'][f'xs_id_mono_fly_channel0{ind + 1}'][..., :2500] for ind in range(7)], axis=(0, 1, 2))
                     else:
-                        xrf_sum = np.sum([bs_run['primary']['data'][f'xs_channel0{i + 1}_fluor'][..., :2500] for i in range(7)], axis=(0, 1))
+                        # This should work unless something very bad happens
+                        try:
+                            xrf_sum = np.sum([bs_run['primary']['data'][f'xs_channel0{i + 1}_fluor'][..., :2500] for i in range(7)], axis=(0, 1))
+                        except Exception as ex:
+                            print(f"WARNING: Error loading data for scan ID {bs_run.start['scan_id']}.")
+                            print(f'{ex.__class__.__name}: {ex}')
+                            print('Attempting manual loading of data...')
+                            
+                            for i, (name, doc) in enumerate(bs_run.documents()):
+                                if name == 'resource' and doc['spec'] == 'XSP3':
+                                    with h5py.File(doc['resource_path']) as hdf:
+                                        xrf_sum = np.sum(hdf['entry/data/data'][:, :7, :2500], axis=(0, 1))
                     
+                    if self._verbose:
+                        print('Finding ROIs from sum XRF spectra...')
                     xs_roi = find_xrf_rois(xrf_sum,
                                            np.arange(0, len(xrf_sum)) * en_step,
                                            scan['energy'] * 1e3)
@@ -1029,6 +1048,7 @@ class SRXScanPDF(FPDF):
                             if el == edge_name.split('_')[0]:
                                 if self._verbose:
                                     print(f'Identified {edge_name} for ROI!')
+                                roi_line = roi_label
                                 roi_label = edge_name
                                 line_en = xrfC.XrfElement(el).emission_line[line] * 1e3
                                 roi = slice(int((line_en / en_step) - (100 / en_step)),
@@ -1043,12 +1063,14 @@ class SRXScanPDF(FPDF):
                     # Give up
                     # TODO reduce edge names to best option
                     else:
+                        roi_line = None
                         print('Failed to find ROI from XRF spectrum. ROI plotting will be bad.')
                         if len(red_edges) > 0:
                             roi_label = red_edges_names[0]
                             roi = int(np.round(red_edges[0] / 1e3))
                         elif len(roi_labels) > 0:
                             roi_label = roi_labels[0]
+
                             el, line = roi_label.split('_')
                             line_en = xrfC.XrfElement(el).emission_line[line] * 1e3
                             roi = slice(int((line_en / en_step) - (100 / en_step)),
@@ -1062,15 +1084,37 @@ class SRXScanPDF(FPDF):
             # TODO: Allow for multiple edges with XAS_FLY?
             data = None
             if scan_type == 'step' and 'primary' in bs_run:
+                if self._verbose:
+                    print('Loading data for step scan...')
                 en = bs_run['primary']['data']['energy_energy'][:].astype(np.float32)
                 if en[0] < 1e3:
                     en *= 1e3
                 # Pull from internal roi if they match and are appropriate
-                if roi_label == roi_labels[0]:
-                    data = np.sum([bs_run['primary']['data'][f'xs_channel0{i + 1}_mcaroi01_total_rbv'][:] for i in range(7)], axis=0, dtype=np.float32)
+                for roi_ind, scan_label in enumerate(scan_roi_labels):
+                    if roi_line == scan_label:
+                        if self._verbose:
+                            print(f'Loading data from mca roi channel {roi_ind} for roi {roi_label}.')
+                        data = np.sum([bs_run['primary']['data'][f'xs_channel0{i + 1}_mcaroi0{roi_ind + 1}_total_rbv'][:] for i in range(7)], axis=0, dtype=np.float32)
+                        break
                 # Otherwise pull from generate roi
-                else: 
-                    data = np.sum([bs_run['primary']['data'][f'xs_channel0{i + 1}_fluor'][..., roi] for i in range(7)], axis=(0, -1), dtype=np.float32)
+                else:
+                    if self._verbose:
+                        print(f'Loading data from custom roi {roi_label} from full XRF spectra...')
+                    # data = np.sum([bs_run['primary']['data'][f'xs_channel0{i + 1}_fluor'][..., roi] for i in range(7)], axis=(0, -1), dtype=np.float32)
+
+                    # This should work...
+                    try:
+                        data = np.sum([bs_run['primary']['data'][f'xs_channel0{i + 1}_fluor'][..., roi] for i in range(7)], axis=(0, -1), dtype=np.float32)
+                    except Exception as ex:
+                        print(f"WARNING: Error loading data for scan ID {bs_run.start['scan_id']}.")
+                        print(f'{type(ex).__name__}: {ex}')
+                        print('Attempting manual loading of data...')
+                        
+                        for i, (name, doc) in enumerate(bs_run.documents()):
+                            if name == 'resource' and doc['spec'] == 'XSP3':
+                                with h5py.File(doc['resource_path']) as hdf:
+                                    data = np.sum(hdf['entry/data/data'][:, :7, roi], axis=(-2, -1), dtype=np.float32)
+
                 data /= bs_run['primary']['data']['sclr_i0'][:].astype(np.float32)
                 edge_ind = np.argmax(np.gradient(data, en))
                 # el_edge = red_edges_names[np.argmin(np.abs(np.array(red_edges) - en[edge_ind]))]
@@ -1083,6 +1127,8 @@ class SRXScanPDF(FPDF):
                 labels = None
             
             elif (scan_type == 'fly' and any(['scan' in key for key in bs_run.keys()])):
+                if self._verbose:
+                    print('Loading data for fly scan...')
                 try:
                     stream_names = [key for key in bs_run.keys() if 'scan' in key]
                     en, data, marker, labels = [], [], [], []
@@ -1458,7 +1504,10 @@ class SRXScanPDF(FPDF):
 
         # Load data around ROI
         if scan_type == 'fly':
-            data = np.sum(bs_run['stream0']['data']['xs_fluor'][..., :7, roi], axis=(-2, -1,), dtype=np.float32)
+            num_rows = bs_run['stream0']['data']['xs_fluor'].shape[0]
+            # data = np.sum(bs_run['stream0']['data']['xs_fluor'][..., :7, roi], axis=(-2, -1,), dtype=np.float32)
+            # data = np.sum(bs_run['stream0']['data']['xs_fluor'][..., :7, roi.start:roi.stop], axis=(-2, -1,), dtype=np.float32)
+            data = np.sum(np.asarray([bs_run['stream0']['data']['xs_fluor'][i, :, :7, roi] for i in range(num_rows)]), axis=(-2, -1), dtype=np.float32)
         else:
             data = self._load_and_reshape_step_data(bs_run, roi)
 
@@ -1500,7 +1549,7 @@ class SRXScanPDF(FPDF):
         if scan_type == 'fly':
             data = bs_run['stream0']['data'][roi][:].astype(np.float32)
         else:
-            data = self._load_and_reshape_step_data(bs_run, roi)
+            data = self._load_and_reshape_step_data(bs_run, f'sclr_{roi}')
         if roi != sclr_key: # Normalize if not plotting the normalization
             data /= sclr
             int_label = 'Normalized Intensity [a.u.]'
@@ -1988,6 +2037,9 @@ class SRXScanPDF(FPDF):
     def get_start_scan_data(self,
                             bs_run):
         """Get metadata from start document."""
+
+        if self._verbose:
+            print('Extracting metadata from start document...')
         
         scan_meta_data = {}
 
@@ -2043,6 +2095,10 @@ class SRXScanPDF(FPDF):
     def get_baseline_scan_data(self,
                                bs_run):
         """Get reference data from baseline"""
+
+        if self._verbose:
+            print('Extracting metadata from baseline...')
+
         scan_base_data = {}
 
         if 'baseline' in bs_run:
@@ -2075,14 +2131,14 @@ class SRXScanPDF(FPDF):
         if (scan_base_data['th'] is None
             and 'scan' in bs_run.start
             and 'theta' in bs_run.start['scan']):
-            th = bs_run.start['scan']['theta']['val']
+            th = float(bs_run.start['scan']['theta']['val'])
             units = bs_run.start['scan']['theta']['units']
             scan_base_data['th'] = th
             scan_base_data['th_units'] = units
 
         # Energy values!
         if 'energy_energy_setpoint' in baseline['data']:
-            en = baseline['data']['energy_energy_setpoint'][0]
+            en = float(baseline['data']['energy_energy_setpoint'][0])
             if en < 1e3:
                 en *= 1e3
             scan_base_data['energy'] = en
@@ -2090,7 +2146,9 @@ class SRXScanPDF(FPDF):
         elif 'scan' in bs_run.start and 'energy' in bs_run.start['scan']:
             en = bs_run.start['scan']['energy']
             if isinstance(en, list):
-                en = en[0]
+                en = float(en[0])
+            else:
+                en = float(en)
             if en < 1e3:
                 en *= 1e3
             scan_base_data['energy'] = en
