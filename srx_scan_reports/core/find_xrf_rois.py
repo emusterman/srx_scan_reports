@@ -150,14 +150,18 @@ def find_xrf_rois(xrf,
             energy = energy[en_range]
 
             # Background subraction with ARPLS
-            bkg = arpls(xrf)
-            xrf -= bkg
+            if xrf.sum() != 0:
+                bkg = arpls(xrf)
+                xrf -= bkg
 
-            # Remove invalid data_points
-            xrf[xrf < 1] = 1
+                # Remove invalid data_points
+                xrf[xrf < 1] = 1
 
-            # Find peaks based on log prominence
-            peaks, proms = find_peaks(np.log(xrf), prominence=log_prominence)
+                # Find peaks based on log prominence
+                peaks, proms = find_peaks(np.log(xrf), prominence=log_prominence)
+            else:
+                bkg = np.zeros_like(xrf)
+                peaks = []
 
             # Blindly find intensity from 200 eV window (assuming 10 eV steps)
             peak_snr = []
