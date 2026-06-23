@@ -368,7 +368,7 @@ class CentralWidget(QWidget):
         self.wd.wd_line.setEnabled(boolean)
         self.wd.wd_button.setEnabled(boolean)
         self.continuous.setEnabled(boolean)
-        self.verbose.setEnabled(boolean)
+        # self.verbose.setEnabled(boolean)
         self.proposal_id.setEnabled(boolean)
         self.cycle.setEnabled(boolean)
         self.clear_button.setEnabled(boolean)
