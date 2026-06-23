@@ -325,7 +325,7 @@ class QPeriodicTable(QWidget):
 
     def SRX_presets(self):
 
-        self._too_low_elements = ['H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne', 'Na', 'Mg', 'Al']
+        self._too_low_elements = ['H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne', 'Na', 'Mg']
         self._unstable_elements = ['Og', 'Ts', 'Lv', 'Mc', 'Fl', 'Nh', 'Cn', 'Rg', 'Ds', 'Mt', 'Hs', 'Bh', 'Sg', 'Db', 'Rf', 'Lr', 'No', 'Md', 'Fm', 'Es']
         self._too_boring_elements = ['Ar']
         self._uncommon_elements = ['Tc', 'Po', 'At', 'Rn', 'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm', 'Bk', 'Cf']
